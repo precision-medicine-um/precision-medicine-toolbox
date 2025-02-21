@@ -39,6 +39,7 @@ class DataSet:
         self._data_type = data_type
         # self.__patients = os.listdir(data_path)
         self.__patients = [d for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, d))]
+        # print(f'Found {self.__patients}')
         self._patient_dict = OrderedDict()
         if mask_names:
             self.__mask_names = mask_names

@@ -51,22 +51,27 @@ class ToolBox(DataSet):
         MAMMOGAPHY_params = ['Temp', 'Temp_2', 'Temp_3']
 
         if self._data_type == 'dcm':
+            # Determine final list of parameters to collect
             if parameter_list == 'MRI':
                 params_list = MRI_params
-
             elif parameter_list == 'CT':
                 params_list = CT_params
             else:
                 params_list = parameter_list
 
-            dataset_stats = DataFrame(data=None, columns=params_list)
+            # Prepare to collect rows in a list
+            rows = []
+            # Loop through patients
             for pat, path in tqdm(self, desc='Patients processed'):
                 image, _ = self.__read_scan(path[0])
+                # Collect data for each slice
                 for i, temp_slice in enumerate(image):
-                    dataset_stats = dataset_stats.append(
-                        pd.Series([pat, str(i), *[self.__val_check(temp_slice, x) for x in params_list]],
-                                  index=['patient', 'slice#', *params_list]),
-                        ignore_index=True)
+                    # Evaluate each parameter's value
+                    row_values = [pat, str(i)] + [self.__val_check(temp_slice, x) for x in params_list]
+                    rows.append(row_values)
+
+            # Build final DataFrame (including 'patient' and 'slice#' as columns)
+            dataset_stats = pd.DataFrame(rows, columns=['patient', 'slice#'] + params_list)
 
             return dataset_stats
         else:
@@ -176,7 +181,10 @@ class ToolBox(DataSet):
 
                         for i, img_path in enumerate(img_paths):
                             img_sitk = sitk.ReadImage(img_path)
-                            output_filename = f"image_{i}.nrrd"
+                            base_name = os.path.basename(img_path)
+                            # output_filename = f"image_{i}.nrrd"
+                            output_filename =  base_name.replace('.dcm', '.nrrd')
+                            output_filename = 'image_' + output_filename
                             sitk.WriteImage(img_sitk, os.path.join(export_dir, output_filename), useCompression=True)
                 else:
                     for pat, pat_path in tqdm(self, desc='Patients converted'):
@@ -238,7 +246,7 @@ class ToolBox(DataSet):
         else:
             raise TypeError('Currently only conversion from dicom -> nrrd is available')
 
-    def convert_nrrd_to_dicom(self, nrrd_path: str, output_dicom_dir: str):
+    def convert_nrrd_to_dicom(self, nrrd_path: str, dcm_path:str, output_dicom_dir: str):
         """
         Convert an NRRD file to a series of DICOM files using metadata from an original DICOM series.
 
@@ -249,11 +257,32 @@ class ToolBox(DataSet):
         # Ensure the output directory exists
         os.makedirs(output_dicom_dir, exist_ok=True)
 
+        # getting path to the original dcms to extract metadata
+
         # Read the NRRD file
         for pat, pat_path in tqdm(self, desc='Patients converted'):
+            os.makedirs(os.path.join(output_dicom_dir, pat), exist_ok=True)
+           
+
             nrrd_files = [p for p in pat_path if p.endswith('.nrrd')]
             for img_path in nrrd_files:
                 if img_path:
+                    
+                    # Get the file name
+                    base_name = os.path.splitext(os.path.basename(img_path))[0]
+                    dir_name = os.path.dirname(img_path)
+                
+                    
+                    org_file_name = '_'.join(base_name.split('_')[2:])  # Adjusted index to get 'image_0'
+                    # reading original dicom
+                    org_dcm_path = os.path.join(dcm_path, pat, f"{org_file_name}.dcm")
+                    reader = sitk.ImageFileReader()
+                    reader.SetFileName(org_dcm_path)
+                    # Explicitly enable reading of private tags:
+                    reader.LoadPrivateTagsOn()  
+
+                    original_dicom = reader.Execute()
+
                     img_sitk = sitk.ReadImage(img_path)
                     # Convert the data type of the image array to int16, typically needed for medical images
                     img_arr = sitk.GetArrayFromImage(img_sitk).astype(np.int16)
@@ -264,17 +293,50 @@ class ToolBox(DataSet):
                     sitk_img.SetOrigin(img_sitk.GetOrigin())
                     sitk_img.SetDirection(img_sitk.GetDirection())
 
-                    # Set necessary DICOM metadata
-                    sitk_img.SetMetaData("0008|0016", "1.2.840.10008.5.1.4.1.1.2")  # SOP Class UID, e.g., CT Image Storage
-                    sitk_img.SetMetaData("0008|103E", "Image converted from NRRD")  # Series Description
+                    # Copy all metadata from the original DICOM
+                    # 2) Copy all metadata from the reference DICOM
+                    for key in original_dicom.GetMetaDataKeys():
+                        sitk_img.SetMetaData(key, original_dicom.GetMetaData(key))
 
-                    # Get the file name
-                    base_name = os.path.splitext(os.path.basename(img_path))[0]
-                    org_file_name = '_'.join(base_name.split('_')[2:])  # Adjusted index to get 'image_0'
+                    # Set necessary DICOM metadata
+                    # sitk_img.SetMetaData("0008|0016", "1.2.840.10008.5.1.4.1.1.2")  # SOP Class UID, e.g., CT Image Storage
+                    # sitk_img.SetMetaData("0008|103E", "Image converted from NRRD")  # Series Description
+                    # sitk_img.SetMetaData("0008|0018", pydicom.uid.generate_uid())  # SOP Instance UID (Unique Identifier)
+                    # sitk_img.SetMetaData("0020|000E", pydicom.uid.generate_uid())  # New Series Instance UID
+
+                    
+                    
                     # Save the new DICOM file
-                    output_path = os.path.join(output_dicom_dir, f"{org_file_name}_converted_img.dcm")
+                    output_path = os.path.join(output_dicom_dir, pat,  f"pp_{org_file_name}.dcm")
                     # Write the DICOM file
                     sitk.WriteImage(sitk_img, output_path)
+
+                    # Verify and handle sequences and private tags using pydicom
+                    ds = pydicom.dcmread(output_path)
+                    original_ds = pydicom.dcmread(org_dcm_path)
+
+                    # Copy sequences from the original DICOM
+                    for elem in original_ds:
+                        if elem.VR == "SQ":  # Sequence
+                            if elem.tag in ds:
+                                ds[elem.tag].value = elem.value
+                            else:
+                                ds.add_new(elem.tag, elem.VR, elem.value)
+
+                    # Explicitly copy private tags with correct VR
+                    # Explicitly copy private tags with correct VR and encoding
+                    for elem in original_ds:
+                        if elem.tag.is_private:
+                            if isinstance(elem.value, str):
+                                value = elem.value.encode('utf-8')
+                            else:
+                                value = elem.value
+                            if elem.tag in ds:
+                                ds[elem.tag].value = value
+                            else:
+                                ds.add_new(elem.tag, elem.VR, value)
+
+                    ds.save_as(output_path)
 
         print(f"Conversion complete. DICOM files saved to {output_dicom_dir}")
 
@@ -307,7 +369,7 @@ class ToolBox(DataSet):
             visualize: Enable visualization of every pre-processing step.
 
         '''
-        ####
+
         mask_array = []
         mask = None
         if hist_match and ref_img_path:
@@ -317,7 +379,8 @@ class ToolBox(DataSet):
         # ref_img_arr = sitk.GetArrayFromImage(sitk.ReadImage(ref_img_path))
         for i, pat in tqdm(self):
             for image_path in pat:
-                image_name = os.path.splitext(os.path.basename(image_path))[0]
+                # image_name = os.path.splitext(os.path.basename(image_path))[0]
+                image_name = os.path.basename(image_path)
                 image = sitk.ReadImage(image_path)
                 if not self._image_only:
                     mask = sitk.ReadImage(pat[1])
@@ -361,7 +424,8 @@ class ToolBox(DataSet):
                     print("Failed to copy information from the original image:", e)
 
                 ##
-                output_filename = f"pre_processed_{image_name}.nrrd"
+                output_filename = f"pp_{image_name}"
+                print(f'output name {output_filename} and export dir {export_dir}')
                 sitk.WriteImage(pre_processed_image,
                                 os.path.join(export_dir, output_filename))  # save image and binary mask locally
                 if mask is not None:
@@ -407,10 +471,19 @@ class ToolBox(DataSet):
                       'Convolutional kernel tag is present', 'Convolutional kernel is acceptable',
                       'Axial pr. resolution is acceptable', 'Intensity intercept/slope tags are present']
 
-        checks_df = pd.DataFrame([], columns=df_columns)
+        checks_list = []
+
         for pat in tqdm(self):
-            checks = self.__quality_checks(*pat, qc_parameters=qc_parameters, columns=df_columns, verbosity=verbosity)
-            checks_df = checks_df.append(checks, ignore_index=True)
+            checks = self.__quality_checks(
+                *pat,
+                qc_parameters=qc_parameters,
+                columns=df_columns,
+                verbosity=verbosity
+            )
+            checks_list.append(checks)
+
+        # Concatenate all individual DataFrames into a single DataFrame
+        checks_df = pd.concat(checks_list, ignore_index=True)
         return checks_df
 
     def __quality_checks(self, patient, path, qc_parameters, columns, verbosity):
@@ -806,7 +879,7 @@ class ToolBox(DataSet):
         img = img / norm_coeff[1]
         return img
 
-    def __normalize_image_zscore_per_image(self, image, mask,
+    def __normalize_image_zscore_per_image(self, image,
                                            verbosity):  ##Zscore based on the masked region intensities
         image_s = image.copy()
         mu = np.mean(image_s.flatten())
@@ -845,7 +918,7 @@ class ToolBox(DataSet):
                 filtered += np.min(img.flatten())
             filtered = (1.0 * filtered) / (1.0 * np.max(img.flatten()))
             filtered = 1.0 * fat_int_value * filtered
-            return np.array(filtered, np.uint16)
+            return np.array(filtered, img.dtype)
 
         elif method == '95th':
             filtered = img.copy()
@@ -854,7 +927,20 @@ class ToolBox(DataSet):
             perc_95 = np.percentile(filtered.flatten(), 95)
             filtered = (1.0 * filtered) / (1.0 * np.max(img.flatten()))
             filtered = 1.0 * perc_95 * filtered
-            return np.array(filtered, np.uint16)
+            return np.array(filtered, img.dtype)
+        elif method == '2_98th':
+            filtered = img.copy()
+            if np.min(img.flatten()) < 0:
+                filtered += np.min(img.flatten())
+
+            perc_5 = np.percentile(filtered.flatten(), 2)
+            perc_95 = np.percentile(filtered.flatten(), 98)
+
+            # Scale the image to the range [0, 1] based on the 5th and 95th percentiles
+            filtered = np.clip(filtered, perc_5, perc_95)
+            filtered = (filtered - perc_5) / (perc_95 - perc_5)
+
+            return np.array(filtered, img.dtype)
         else:
             print('max value is not understood, skipping intensity rescaling step!')
 
@@ -1044,13 +1130,28 @@ class ToolBox(DataSet):
         #         plt.show()
 
         if hist_equalize:
-            img = cv2.equalizeHist(img.astype(np.uint8))
+            # Ensure the image is single-channel (grayscale)
+            if len(img.shape) == 3 and img.shape[2] == 3:
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+                print("Image converted to grayscale.")
+
+            # Normalize the image to the range 0-255
+            img_normalized = cv2.normalize(img, None, alpha=0, beta=255, norm_type=cv2.NORM_MINMAX)
+            img_uint8 = img_normalized.astype(np.uint8)
+
+            # Apply histogram equalization to each 2D slice
+            if len(img_uint8.shape) == 3:
+                equalized_slices = [cv2.equalizeHist(slice) for slice in img_uint8]
+                img = np.stack(equalized_slices, axis=0)
+            else:
+                img = cv2.equalizeHist(img_uint8)
+
             if verbosity:
                 print('Histogram Equalization applied')
             if visualize:
                 img = np.squeeze(img)
                 plt.figure(figsize=(12, 12))
-                plt.imshow(img, cmap='bone')
+                plt.imshow(img[img.shape[0] // 2], cmap='bone')  # Display the middle slice
                 plt.title('Histogram Equalized')
                 plt.show()
 
@@ -1065,7 +1166,7 @@ class ToolBox(DataSet):
                 plt.show()
 
         elif z_score:
-            img, mu, sigma = self.__normalize_image_zscore_per_image(img, verbosity)
+            img, mu, sigma = self.__normalize_image_zscore_per_image(img, verbosity=verbosity)
             if verbosity:
                 print('Z-score normalization applied based on image intensities, Mu=%s, sigma=%s' % (mu, sigma))
             if visualize:

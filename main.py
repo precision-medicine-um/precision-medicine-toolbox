@@ -29,16 +29,19 @@ def preprocess(data_path, save_path):
         save_path=save_path,
         verbosity=True,
         visualize=False,
-        clahe_apply=True,
-        clahe_clip_limit=2.0,
-        clahe_tile_grid_size=(8, 8)
+        clahe_apply=False,
+        z_score = False,
+        percentile_scaling=True,
+        hist_equalize=False,
+        # clahe_clip_limit=2.0,
+        # clahe_tile_grid_size=(8, 8)
     )
 
-def convert_nrrd_to_dicom(nrrd_path, output_dicom_dir):
+def convert_nrrd_to_dicom(nrrd_path, dcm_path, output_dicom_dir):
     os.makedirs(output_dicom_dir, exist_ok=True)
 
     dataset = ToolBox(data_path=nrrd_path, data_type='nrrd', twod_image='True',image_only='True')
-    dataset.convert_nrrd_to_dicom(nrrd_path=nrrd_path, output_dicom_dir=output_dicom_dir)
+    dataset.convert_nrrd_to_dicom(nrrd_path=nrrd_path,dcm_path=dcm_path, output_dicom_dir=output_dicom_dir)
 
 
 def main():

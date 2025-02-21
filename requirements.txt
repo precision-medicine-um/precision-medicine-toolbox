@@ -21,3 +21,4 @@ seaborn
 pickle-mixin
 openpyxl==3.0.7
 jupyter
+flask==2.2.3
