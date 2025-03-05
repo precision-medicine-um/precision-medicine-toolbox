@@ -64,6 +64,7 @@ def main():
 
     #  convert_nrrd_to_dicom
     parser_convert_back = subparsers.add_parser("convert_nrrd_to_dicom")
+    parser_convert_back.add_argument("--data_path", required=True, help="Path to the DICOM data")
     parser_convert_back.add_argument("--nrrd_path", required=True, help="Path to the NRRD data")
     parser_convert_back.add_argument("--output_dicom_dir", required=True, help="Path to save the converted DICOM files")
 
@@ -74,7 +75,7 @@ def main():
     elif args.command == "preprocess":
         preprocess(args.data_path, args.save_path)
     elif args.command == "convert_nrrd_to_dicom":
-        convert_nrrd_to_dicom(args.nrrd_path, args.output_dicom_dir)
+        convert_nrrd_to_dicom(args.nrrd_path, args.data_path, args.output_dicom_dir)
     else:
         parser.print_help()
 
