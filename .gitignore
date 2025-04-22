@@ -10,6 +10,10 @@ test_log.txt
 # C extensions
 *.so
 
+data2/converted_dicoms
+data2/preprocessed
+data2/converted_nrrds
+
 # Distribution / packaging
 .Python
 build/

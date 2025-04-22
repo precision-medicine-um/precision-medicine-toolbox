@@ -1,10 +1,8 @@
-version: '3.8'
-
 services:
   toolbox:
     build: .
     volumes:
-      - images_folder_path/data:/app/data
+      - "C:/Users/p70092896/OneDrive - Maastricht University/Desktop/AIDAVA/precision-medicine-toolbox/data2:/app/data"
     environment:
       DATA_PATH: /app/data
       DATA_TYPE: dcm
@@ -12,4 +10,5 @@ services:
       TWOD_IMAGE: "True"
       PRE_PROCESSED_PATH: /app/data/preprocessed
       OUT_DICOM_PATH: /app/data/converted_dicoms
-    entrypoint: ["python", "main.py"]
+    ports:
+      - "8000:8000"

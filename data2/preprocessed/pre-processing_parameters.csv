@@ -1,16 +1,16 @@
-Pre-processing parameters:
-ref_img_path: None
-save_path: data2\preprocessed
-z_score: False
-norm_coeff: None
-hist_match: False
-hist_equalize: False
-binning: False
-percentile_scaling: True
-subcateneus_fat: False
-fat_value: None
-verbosity: True
-visualize: False
-clahe_apply: False
-clahe_clip_limit: 2.0
-"clahe_tile_grid_size: (8, 8)"
+Pre-processing parameters:
+ref_img_path: None
+save_path: /app/data/preprocessed
+z_score: False
+norm_coeff: None
+hist_match: False
+hist_equalize: False
+binning: False
+percentile_scaling: True
+subcateneus_fat: False
+fat_value: None
+verbosity: True
+visualize: False
+clahe_apply: False
+clahe_clip_limit: 2.0
+"clahe_tile_grid_size: (8, 8)"
