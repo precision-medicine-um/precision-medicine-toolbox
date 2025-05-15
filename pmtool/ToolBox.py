@@ -176,7 +176,7 @@ class ToolBox(DataSet):
                 if self._image_only:
                     for pat, pat_data in tqdm(self._patient_dict.items(), desc='Patients converted'):
                         img_paths = pat_data['images']
-                        export_dir = os.path.join(export_path, 'converted_nrrds', pat)
+                        export_dir = os.path.join(export_path, pat)
                         os.makedirs(export_dir, exist_ok=True)
 
                         for i, img_path in enumerate(img_paths):
@@ -193,7 +193,7 @@ class ToolBox(DataSet):
                         img_sitk = sitk.ReadImage(img_path)
                         lab_sitk = sitk.ReadImage(lab_path)
 
-                        export_dir = os.path.join(export_path, 'converted_nrrds', pat)
+                        export_dir = os.path.join(export_path, pat)
                         os.makedirs(export_dir, exist_ok=True)
                         sitk.WriteImage(img_sitk, os.path.join(export_dir, "image.nrrd"), useCompression=True)
                         sitk.WriteImage(lab_sitk, os.path.join(export_dir, "label.nrrd"), useCompression=True)
@@ -203,7 +203,7 @@ class ToolBox(DataSet):
                         img_path = pat_path[0]
                         image = self.__get_image(img_path, image_type)
 
-                        export_dir = os.path.join(export_path, 'converted_nrrds', pat)
+                        export_dir = os.path.join(export_path, pat)
                         if not os.path.exists(export_dir):
                             os.makedirs(export_dir)
 
@@ -227,7 +227,7 @@ class ToolBox(DataSet):
                             try:
                                 image, mask = self.__get_binary_mask(img_path, rt_structure, roi, image_type)
 
-                                export_dir = os.path.join(export_path, 'converted_nrrds', pat)
+                                export_dir = os.path.join(export_path, pat)
 
                                 if not os.path.exists(export_dir):
                                     os.makedirs(export_dir)
