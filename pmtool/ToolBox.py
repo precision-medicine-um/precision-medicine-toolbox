@@ -273,7 +273,8 @@ class ToolBox(DataSet):
                     dir_name = os.path.dirname(img_path)
                 
                     
-                    org_file_name = '_'.join(base_name.split('_')[2:])  # Adjusted index to get 'image_0'
+                    # org_file_name = '_'.join(base_name.split('_')[2:])  # Adjusted index to get 'image_0'
+                    org_file_name = base_name.split('_')[-1].replace('.nrrd', '')  # Adjusted index to get 'image_0'
                     # reading original dicom
                     org_dcm_path = os.path.join(dcm_path, pat, f"{org_file_name}.dcm")
                     reader = sitk.ImageFileReader()
