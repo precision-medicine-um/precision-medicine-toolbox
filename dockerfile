@@ -1,24 +1,38 @@
 FROM python:3.8-slim
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    libgl1-mesa-glx \
-    libglib2.0-0
-
-RUN pip install --upgrade pip
-
-# Set the working directory in the container
+# Set working directory
 WORKDIR /app
 
-# Copy the local requirements file into the container
+# Install system dependencies needed by SimpleITK and your app
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    build-essential \
+    cmake \
+    git \
+    curl \
+    zlib1g-dev \
+    libexpat1-dev \
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy requirements first to leverage Docker cache
 COPY requirements.txt .
 
-# Install Python packages including FastAPI and uvicorn
-RUN pip install --no-cache-dir -r requirements.txt \
-    && pip install fastapi uvicorn
+# Upgrade pip
+RUN pip install --upgrade pip
 
-# Copy the local code into the container
+# Install SimpleITK first (try a version with prebuilt wheels)
+RUN pip install SimpleITK==2.4.0
+
+# Install FastAPI and Uvicorn (you can keep this here or move to requirements.txt)
+RUN pip install "fastapi[all]" "uvicorn[standard]"
+RUN pip install packaging
+# Install the rest of requirements without dependencies (to avoid reinstalling SimpleITK)
+RUN pip install -r requirements.txt 
+
+# Copy all other files
 COPY . .
 
-# Run the FastAPI server
+# Command to run your FastAPI app
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]

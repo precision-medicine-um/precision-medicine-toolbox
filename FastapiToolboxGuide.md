@@ -55,6 +55,7 @@ services:
 
 ### Step 4: Build and Run the API
 ```bash
+docker build --no-cache -t precision-medicine-toolbox .
 docker compose up --build
 ```
 
