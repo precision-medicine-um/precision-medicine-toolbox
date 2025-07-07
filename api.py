@@ -1,60 +1,24 @@
-from fastapi import FastAPI, BackgroundTasks
-import os
-from pmtool.ToolBox import ToolBox
+# app.py
+from fastapi import FastAPI, BackgroundTasks, status
+from schemas import ConvertToNRRDJob, PreprocessJob, NrrdToDicomJob
+from worker import convert_to_nrrd, preprocess, nrrd_to_dicom
 
 app = FastAPI()
 
-def convert_to_nrrd_task(data_path, export_path, data_type, multi_rts_per_pat, twod_image):
-    parameters = {
-        'data_path': data_path,
-        'data_type': data_type,
-        'multi_rts_per_pat': multi_rts_per_pat,
-        'twod_image': twod_image,
-        'image_only': True
-    }
-    dataset = ToolBox(**parameters)
-    dataset.convert_to_nrrd(export_path)
+@app.post("/convert_to_nrrd/", status_code=status.HTTP_202_ACCEPTED)
+async def convert_to_nrrd_endpoint(job: ConvertToNRRDJob, bg: BackgroundTasks):
+    bg.add_task(convert_to_nrrd, job)
+    return {"detail": "Conversion started – result will be POSTed to callback_url"}
 
+@app.post("/preprocess/", status_code=status.HTTP_202_ACCEPTED)
+async def preprocess_endpoint(job: PreprocessJob, bg: BackgroundTasks):
+    bg.add_task(preprocess, job)
+    return {"detail": "Pre-processing started – result will be POSTed to callback_url"}
 
-@app.post("/convert_to_nrrd/")
-def convert_to_nrrd_endpoint(background_tasks: BackgroundTasks,
-                             data_path: str, 
-                             export_path: str,
-                             data_type: str = "dcm",
-                             multi_rts_per_pat: bool = False,
-                             twod_image: bool = True):
-    
-    background_tasks.add_task(convert_to_nrrd_task, data_path, export_path, data_type, multi_rts_per_pat, twod_image)
-    return {"message": "Conversion to NRRD started"}
-
-def preprocess_task(data_path, save_path):
-    os.makedirs(save_path, exist_ok=True)
-    dataset = ToolBox(data_path, data_type='nrrd', twod_image=True, image_only=True)
-
-    dataset.pre_process(
-        save_path=save_path,
-        verbosity=True,
-        visualize=False,
-        clahe_apply=False,
-        z_score=False,
-        percentile_scaling=True,
-        hist_equalize=False,
-    )
-
-@app.post("/preprocess/")
-def preprocess_endpoint(background_tasks: BackgroundTasks, data_path: str, save_path: str):
-    background_tasks.add_task(preprocess_task, data_path, save_path)
-    return {"message": "Preprocessing started"}
-
-def convert_nrrd_to_dicom_task(nrrd_path, dcm_path, output_dicom_dir):
-    os.makedirs(output_dicom_dir, exist_ok=True)
-    dataset = ToolBox(data_path=nrrd_path, data_type='nrrd', twod_image=True, image_only=True)
-    dataset.convert_nrrd_to_dicom(nrrd_path=nrrd_path, dcm_path=dcm_path, output_dicom_dir=output_dicom_dir)
-
-@app.post("/convert_nrrd_to_dicom/")
-def convert_nrrd_to_dicom_endpoint(background_tasks: BackgroundTasks, nrrd_path: str, dcm_path: str, output_dicom_dir: str):
-    background_tasks.add_task(convert_nrrd_to_dicom_task, nrrd_path, dcm_path, output_dicom_dir)
-    return {"message": "Conversion to DICOM started"}
+@app.post("/convert_nrrd_to_dicom/", status_code=status.HTTP_202_ACCEPTED)
+async def convert_nrrd_to_dicom_endpoint(job: NrrdToDicomJob, bg: BackgroundTasks):
+    bg.add_task(nrrd_to_dicom, job)
+    return {"detail": "DICOM conversion started – result will be POSTed to callback_url"}
 
 @app.get("/")
 def root():

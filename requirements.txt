@@ -15,3 +15,5 @@ seaborn==0.13.2
 scikit-image
 statsmodels==0.14.1
 tqdm==4.66.5
+requests>=2.32
+pydantic>=2
