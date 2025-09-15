@@ -12,6 +12,7 @@ class ConvertToNRRDJob(BaseModel):
 class PreprocessJob(BaseModel):
     data_path: str
     save_path: str
+    modality: str = "mamo"  # "mamo" or "echo"
     callback_url: HttpUrl
 
 class NrrdToDicomJob(BaseModel):

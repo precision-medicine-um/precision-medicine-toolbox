@@ -37,6 +37,59 @@ def preprocess(data_path, save_path):
         # clahe_tile_grid_size=(8, 8)
     )
 
+def preprocess_Mamo_Echo(data_path, save_path, modality='mamo'):
+    os.makedirs(save_path, exist_ok=True)
+    echo_params = {
+    "denoise":   {"enabled": False, "method": "log_aniso", "iterations": 5, "conductance": 3.0, "time_step": 0.0625},
+    "contrast":  {"enabled": False, "method": "percentile_stretch", "stretch_low": 5.0, "stretch_high": 95.0},
+    "sharpen":   {"enabled": False, "sigma": 1.0, "amount": 1.3, "threshold": 0.02},
+    "postprocess": {"opening_enabled": False, "opening_radius": 1},
+    "normalize": {"enabled": False, "method": "none"},
+    }
+    mamo_params = dict(
+                            denoise=dict(
+                                enabled=True,
+                                method="median",        # "median" or "gaussian"
+                                median_radius=(2, 2)    # small radius to avoid harming microcalcifications
+                            ),
+                            contrast=dict(
+                                enabled=True,
+                                method="percentile_stretch",         # "clahe", "gentle_gamma", or "percentile_stretch"
+                                clahe_radius=(32, 32),  # Increased radius for gentler local enhancement
+                                alpha=0.3,              # Higher alpha for more conservative enhancement
+                                beta=0.05,              # Much lower beta for subtle clipping
+                                stretch_low=0.5,        # percentiles for global stretch
+                                stretch_high=99.5,
+                                gamma=0.8               # for gentle_gamma method
+                            ),
+                            sharpen=dict(
+                                enabled=True,
+                                sigma=0.5,              # slightly smaller sigma for high-res MG
+                                amount=1.2,
+                                threshold=0.0
+                            ),
+                            normalize=dict(
+                                enabled=True,
+                                method="rescale_uint8",
+                                perc_low=0.5,
+                                perc_high=99.5
+                            )
+                        )
+
+
+    mg_nnrd = ToolBox(data_path, data_type='nrrd', twod_image='True',image_only='True')
+    if modality == 'mamo':
+        mg_nnrd.pre_process_MAMO(save_path=save_path, mg_params=mamo_params, verbosity=True)
+    elif modality == 'echo':
+        mg_nnrd.pre_process_ECHO(save_path=save_path, us_params=echo_params, verbosity=True)
+    else:
+        raise ValueError("Unsupported modality. Choose 'mamo' or 'echo'.")
+    
+  
+
+
+
+
 def convert_nrrd_to_dicom(nrrd_path, dcm_path, output_dicom_dir):
     os.makedirs(output_dicom_dir, exist_ok=True)
 
@@ -61,6 +114,15 @@ def main():
     parser_preprocess = subparsers.add_parser("preprocess")
     parser_preprocess.add_argument("--data_path", required=True, help="Path to the NRRD data")
     parser_preprocess.add_argument("--save_path", required=True, help="Path to save the preprocessed images")
+    parser_preprocess.add_argument("--modality", default="mamo", choices=["mamo", "echo"], 
+                                   help="Modality to preprocess (default: mamo)")
+
+    # preprocess_mamo_echo
+    parser_preprocess_me = subparsers.add_parser("preprocess_mamo_echo")
+    parser_preprocess_me.add_argument("--data_path", required=True, help="Path to the NRRD data")
+    parser_preprocess_me.add_argument("--save_path", required=True, help="Path to save the preprocessed images")
+    parser_preprocess_me.add_argument("--modality", default="mamo", choices=["mamo", "echo"], 
+                                      help="Modality to preprocess (default: mamo)")
 
     #  convert_nrrd_to_dicom
     parser_convert_back = subparsers.add_parser("convert_nrrd_to_dicom")
@@ -73,7 +135,9 @@ def main():
     if args.command == "convert_to_nrrd":
         convert_to_nrrd(args.data_path, args.export_path, args.data_type, args.multi_rts_per_pat, args.twod_image)
     elif args.command == "preprocess":
-        preprocess(args.data_path, args.save_path)
+        preprocess_Mamo_Echo(args.data_path, args.save_path, args.modality)
+    elif args.command == "preprocess_mamo_echo":
+        preprocess_Mamo_Echo(args.data_path, args.save_path, args.modality)
     elif args.command == "convert_nrrd_to_dicom":
         convert_nrrd_to_dicom(args.nrrd_path, args.data_path, args.output_dicom_dir)
     else:

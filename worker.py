@@ -3,6 +3,7 @@ import traceback, requests, os
 from pmtool.ToolBox import ToolBox
 from pathlib import Path
 from schemas import ConvertToNRRDJob, PreprocessJob, NrrdToDicomJob
+from main import preprocess_Mamo_Echo
 
 # -------- helpers -------------------------------------------------
 
@@ -49,16 +50,7 @@ def convert_to_nrrd(job: ConvertToNRRDJob):
 def preprocess(job: PreprocessJob):
     def _run(j):
         os.makedirs(j.save_path, exist_ok=True)
-        ds = ToolBox(j.data_path, data_type="nrrd", twod_image=True, image_only=True)
-        ds.pre_process(
-            save_path=j.save_path,
-            verbosity=True,
-            visualize=False,
-            clahe_apply=False,
-            z_score=False,
-            percentile_scaling=True,
-            hist_equalize=False,
-        )
+        preprocess_Mamo_Echo(j.data_path, j.save_path, j.modality)
         return j.save_path
 
     _wrap(job, _run)

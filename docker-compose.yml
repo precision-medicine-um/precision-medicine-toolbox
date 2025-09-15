@@ -2,7 +2,7 @@ services:
   toolbox:
     build: .
     volumes:
-      - "C:/Users/p70092896/OneDrive - Maastricht University/Desktop/AIDAVA/test/precision-medicine-toolbox/data2:/app/data"
+      - "C:/Users/p70092896/OneDrive - Maastricht University/Desktop/AIDAVA/precision-medicine-toolbox_dev/data2:/app/data"
     environment:
       DATA_PATH: /app/data
       DATA_TYPE: dcm

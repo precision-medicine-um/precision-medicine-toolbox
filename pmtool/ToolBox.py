@@ -50,6 +50,7 @@ class ToolBox(DataSet):
 
         MAMMOGAPHY_params = ['Temp', 'Temp_2', 'Temp_3']
 
+
         if self._data_type == 'dcm':
             # Determine final list of parameters to collect
             if parameter_list == 'MRI':
@@ -246,100 +247,148 @@ class ToolBox(DataSet):
         else:
             raise TypeError('Currently only conversion from dicom -> nrrd is available')
 
-    def convert_nrrd_to_dicom(self, nrrd_path: str, dcm_path:str, output_dicom_dir: str):
+    def convert_nrrd_to_dicom(self, nrrd_path: str, dcm_path: str, output_dicom_dir: str):
         """
-        Convert an NRRD file to a series of DICOM files using metadata from an original DICOM series.
+        Convert NRRD files to DICOM while preserving (or creating) Study/Series/FrameOfReference UIDs.
+        If a UID is missing in the source DICOM, a new one is generated and reused consistently
+        within this run for the same patient/series.
+        """
+        import os, copy
+        from tqdm import tqdm
+        import numpy as np
+        import SimpleITK as sitk
+        import pydicom
+        from pydicom.uid import generate_uid
+        from pydicom.tag import Tag
 
-        Parameters:
-        - nrrd_path: Path to the NRRD file.
-        - output_dicom_dir: Directory where the new DICOM files will be saved.
-        """
-        # Ensure the output directory exists
         os.makedirs(output_dicom_dir, exist_ok=True)
 
-        # getting path to the original dcms to extract metadata
+        # Caches to keep UIDs consistent across files in the same study/series during this run
+        study_uid_cache = {}   # key: (patient_id, src_study_uid or base), value: new_or_src_study_uid
+        series_uid_cache = {}  # key: (patient_id, src_series_uid or base), value: new_or_src_series_uid
+        for_uid_cache = {}     # key: (patient_id, src_for_uid or base), value: new_or_src_for_uid
 
-        # Read the NRRD file
-        for pat, pat_path in tqdm(self, desc='Patients converted'):
-            os.makedirs(os.path.join(output_dicom_dir, pat), exist_ok=True)
-           
+        def _get_attr_or_tag(ds, name, tag):
+            """Return value of attribute if present, else DataElement via tag, else None."""
+            val = getattr(ds, name, None)
+            if val is not None:
+                return val
+            de = ds.get(tag, None)
+            return getattr(de, "value", None)
 
-            nrrd_files = [p for p in pat_path if p.endswith('.nrrd')]
+        def _ensure_uid(cache, key, src_uid=None):
+            """Return src_uid if present, else cached/generate a new one for this key."""
+            if src_uid:
+                cache.setdefault(key, src_uid)
+                return cache[key]
+            if key not in cache:
+                cache[key] = generate_uid()
+            return cache[key]
+
+        for pat, pat_paths in tqdm(self, desc='Patients converted'):
+            pat_out = os.path.join(output_dicom_dir, pat)
+            os.makedirs(pat_out, exist_ok=True)
+
+            nrrd_files = [p for p in pat_paths if p.lower().endswith('.nrrd')]
             for img_path in nrrd_files:
-                if img_path:
-                    
-                    # Get the file name
-                    base_name = os.path.splitext(os.path.basename(img_path))[0]
-                    dir_name = os.path.dirname(img_path)
-                
-                    
-                    # org_file_name = '_'.join(base_name.split('_')[2:])  # Adjusted index to get 'image_0'
-                    org_file_name = base_name.split('_')[-1].replace('.nrrd', '')  # Adjusted index to get 'image_0'
-                    # reading original dicom
-                    org_dcm_path = os.path.join(dcm_path, pat, f"{org_file_name}.dcm")
+                if not img_path:
+                    continue
+
+                base_name = os.path.splitext(os.path.basename(img_path))[0]
+                # Your naming scheme: try to match original DICOM name
+                org_file_stem = base_name.split('_')[-1]
+                org_dcm_path = os.path.join(dcm_path, pat, f"{org_file_stem}.dcm")
+
+                # -- Load original DICOM metadata if present (best-effort) --
+                original_ds = None
+                if os.path.exists(org_dcm_path):
+                    try:
+                        original_ds = pydicom.dcmread(org_dcm_path, stop_before_pixels=True)
+                    except Exception:
+                        original_ds = None
+
+                # -- Load NRRD and make SITK image with copied metadata where possible --
+                img_sitk_in = sitk.ReadImage(img_path)
+                img_arr = sitk.GetArrayFromImage(img_sitk_in)
+
+                sitk_img = sitk.GetImageFromArray(img_arr)
+                sitk_img.SetSpacing(img_sitk_in.GetSpacing())
+                sitk_img.SetOrigin(img_sitk_in.GetOrigin())
+                sitk_img.SetDirection(img_sitk_in.GetDirection())
+
+                # Copy tags from source DICOM into the SITK image metadata (best-effort)
+                if os.path.exists(org_dcm_path):
                     reader = sitk.ImageFileReader()
                     reader.SetFileName(org_dcm_path)
-                    # Explicitly enable reading of private tags:
-                    reader.LoadPrivateTagsOn()  
+                    reader.LoadPrivateTagsOn()
+                    try:
+                        original_dicom = reader.Execute()
+                        for key in original_dicom.GetMetaDataKeys():
+                            try:
+                                sitk_img.SetMetaData(key, original_dicom.GetMetaData(key))
+                            except Exception:
+                                pass
+                    except Exception:
+                        pass
 
-                    original_dicom = reader.Execute()
+                # Write preliminary DICOM
+                out_path = os.path.join(pat_out, f"pp_{org_file_stem}.dcm")
+                sitk.WriteImage(sitk_img, out_path, useCompression=True)
 
-                    img_sitk = sitk.ReadImage(img_path)
-                    # Convert the data type of the image array to int16, typically needed for medical images
-                    img_arr = sitk.GetArrayFromImage(img_sitk).astype(np.int16)
-                    sitk_img = sitk.GetImageFromArray(img_arr)
+                # Open with pydicom and fix UIDs / sequences / private tags
+                ds = pydicom.dcmread(out_path)
 
-                    # Copy spacing, origin, and direction from the original image
-                    sitk_img.SetSpacing(img_sitk.GetSpacing())
-                    sitk_img.SetOrigin(img_sitk.GetOrigin())
-                    sitk_img.SetDirection(img_sitk.GetDirection())
+                # --- Gather source UIDs if available ---
+                src_study_uid  = _get_attr_or_tag(original_ds, "StudyInstanceUID",  Tag(0x0020, 0x000D)) if original_ds else None
+                src_series_uid = _get_attr_or_tag(original_ds, "SeriesInstanceUID", Tag(0x0020, 0x000E)) if original_ds else None
+                src_for_uid    = _get_attr_or_tag(original_ds, "FrameOfReferenceUID", Tag(0x0020, 0x0052)) if original_ds else None
 
-                    # Copy all metadata from the original DICOM
-                    # 2) Copy all metadata from the reference DICOM
-                    for key in original_dicom.GetMetaDataKeys():
-                        sitk_img.SetMetaData(key, original_dicom.GetMetaData(key))
+                # Keys for caches; if source UID missing, use a stable key based on patient+stem
+                study_key  = (pat, src_study_uid  or f"{pat}:{org_file_stem}:study")
+                series_key = (pat, src_series_uid or f"{pat}:{org_file_stem}:series")
+                for_key    = (pat, src_for_uid    or f"{pat}:{org_file_stem}:for")
 
-                    # Set necessary DICOM metadata
-                    # sitk_img.SetMetaData("0008|0016", "1.2.840.10008.5.1.4.1.1.2")  # SOP Class UID, e.g., CT Image Storage
-                    # sitk_img.SetMetaData("0008|103E", "Image converted from NRRD")  # Series Description
-                    # sitk_img.SetMetaData("0008|0018", pydicom.uid.generate_uid())  # SOP Instance UID (Unique Identifier)
-                    # sitk_img.SetMetaData("0020|000E", pydicom.uid.generate_uid())  # New Series Instance UID
+                # --- Ensure UIDs (preserve if present; otherwise create & cache) ---
+                ds.StudyInstanceUID        = _ensure_uid(study_uid_cache,  study_key,  src_study_uid)
+                ds.SeriesInstanceUID       = _ensure_uid(series_uid_cache, series_key, src_series_uid)
+                ds.FrameOfReferenceUID     = _ensure_uid(for_uid_cache,    for_key,    src_for_uid)
 
-                    
-                    
-                    # Save the new DICOM file
-                    output_path = os.path.join(output_dicom_dir, pat,  f"pp_{org_file_name}.dcm")
-                    # Write the DICOM file
-                    sitk.WriteImage(sitk_img, output_path)
+                # New SOPInstanceUID per file (unique)
+                ds.SOPInstanceUID = generate_uid()
 
-                    # Verify and handle sequences and private tags using pydicom
-                    ds = pydicom.dcmread(output_path)
-                    original_ds = pydicom.dcmread(org_dcm_path)
+                # file_meta sanity (keep MediaStorage SOP Instance UID in sync)
+                if not hasattr(ds, "file_meta") or ds.file_meta is None:
+                    ds.file_meta = pydicom.dataset.FileMetaDataset()
+                ds.file_meta.MediaStorageSOPInstanceUID = ds.SOPInstanceUID
+                # If SOP Class UID available in original, keep it; else keep whatever SimpleITK set
+                if original_ds and hasattr(original_ds, "SOPClassUID"):
+                    ds.SOPClassUID = original_ds.SOPClassUID
+                    ds.file_meta.MediaStorageSOPClassUID = original_ds.SOPClassUID
+                else:
+                    # ensure file_meta has a class UID
+                    ds.file_meta.MediaStorageSOPClassUID = getattr(ds, "SOPClassUID", ds.file_meta.get("MediaStorageSOPClassUID", None))
 
-                    # Copy sequences from the original DICOM
+                # --- Copy sequences & private tags from original (best-effort) ---
+                if original_ds:
                     for elem in original_ds:
-                        if elem.VR == "SQ":  # Sequence
-                            if elem.tag in ds:
-                                ds[elem.tag].value = elem.value
-                            else:
+                        try:
+                            if elem.VR == "SQ":
+                                ds[elem.tag] = copy.deepcopy(elem)
+                        except Exception:
+                            pass
+                    for elem in original_ds:
+                        try:
+                            if elem.tag.is_private and elem.tag not in ds:
                                 ds.add_new(elem.tag, elem.VR, elem.value)
+                        except Exception:
+                            pass
 
-                    # Explicitly copy private tags with correct VR
-                    # Explicitly copy private tags with correct VR and encoding
-                    for elem in original_ds:
-                        if elem.tag.is_private:
-                            if isinstance(elem.value, str):
-                                value = elem.value.encode('utf-8')
-                            else:
-                                value = elem.value
-                            if elem.tag in ds:
-                                ds[elem.tag].value = value
-                            else:
-                                ds.add_new(elem.tag, elem.VR, value)
+                # Save final DICOM
+                ds.save_as(out_path)
 
-                    ds.save_as(output_path)
+        print(f"✅ Conversion complete. DICOM files saved to {output_dicom_dir}")
 
-        print(f"Conversion complete. DICOM files saved to {output_dicom_dir}")
+
 
     def pre_process(self, ref_img_path: str = None, save_path: str = None,
                     z_score: bool = False, norm_coeff: tuple = None, hist_match: bool = False,
@@ -442,6 +491,489 @@ class ToolBox(DataSet):
             writer.writerow(['Pre-processing parameters:'])
             for key, value in params.items():
                 writer.writerow([str(str(key) + ': ' + str(value))])
+
+    def pre_process_MAMO(self, save_path: str, mg_params: dict, verbosity: bool = False, visualize: bool = False):
+        """
+        Pre-process mammography images using a parameter dictionary (e.g., mg_params_zero_bg).
+
+        This pipeline is tailored for 2D high‑resolution mammography. It supports:
+          • optional denoising (median / gaussian)
+          • contrast enhancement (CLAHE or percentile stretch)
+          • unsharp masking (sharpen)
+          • percentile-based normalization to uint8 (0..255)
+          • optional background removal (zeroing outside a breast mask)
+
+        Args:
+            save_path (str): Output folder for pre-processed images (per patient subfolders will be created).
+            mg_params (dict): Parameter dict with sections:
+                - denoise:  {enabled: bool, method: "median"/"gaussian", median_radius: (y,x) | sigma: float}
+                - contrast: {enabled: bool, method: "clahe"/"percentile_stretch",
+                             clahe_radius: (y,x), alpha: float, beta: float,
+                             stretch_low: float, stretch_high: float}
+                - sharpen:  {enabled: bool, sigma: float, amount: float, threshold: float}
+                - normalize:{enabled: bool, method: "rescale_uint8", perc_low: float, perc_high: float}
+                - zero_bg:  {enabled: bool, invert_for_otsu: bool, morph_radius: int, erode: int,
+                             min_object_area: int, min_hole_area: int}
+            verbosity (bool): Print debug info for each image.
+            visualize (bool): (Reserved) Show intermediate steps.
+        """
+        # local imports to keep the module import time minimal
+        import os
+        from tqdm import tqdm
+        import numpy as np
+        import SimpleITK as sitk
+        import cv2
+        from skimage import filters, morphology, measure
+
+        if mg_params is None:
+            raise ValueError("mg_params must be provided (e.g., mg_params_zero_bg).")
+
+        # ---------- helpers ----------
+        def _to_uint8(img, perc_low=0.5, perc_high=99.5):
+            lo = np.percentile(img, perc_low)
+            hi = np.percentile(img, perc_high)
+            if hi <= lo:
+                hi = lo + 1.0
+            img_clipped = np.clip(img, lo, hi)
+            norm = (img_clipped - lo) / (hi - lo)
+            return (norm * 255.0).astype(np.uint8)
+
+        def _denoise(img, p):
+            if not p.get("enabled", False):
+                return img
+            method = str(p.get("method", "median")).lower()
+            if method == "median":
+                k = p.get("median_radius", (1, 1))
+                ky = max(int(k[0]) * 2 + 1, 1)
+                kx = max(int(k[1]) * 2 + 1, 1)
+                ksize = min(ky, kx)  # OpenCV medianBlur expects a single odd kernel size
+                ksize = ksize if ksize % 2 == 1 else ksize + 1
+                return cv2.medianBlur(img.astype(np.uint8) if img.dtype != np.uint8 else img, ksize)
+            elif method == "gaussian":
+                sigma = float(p.get("sigma", 1.0))
+                ksize = int(max(3, int(round(sigma * 6)) // 2 * 2 + 1))
+                return cv2.GaussianBlur(img, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
+            return img
+
+        def _contrast(img, p):
+            if not p.get("enabled", False):
+                return img
+            method = str(p.get("method", "clahe")).lower()
+            if method == "clahe":
+                tile = p.get("clahe_radius", (16, 16))
+                ty = int(tile[0]) if isinstance(tile, (list, tuple)) else int(tile)
+                tx = int(tile[1]) if isinstance(tile, (list, tuple)) else int(tile)
+                ty, tx = max(2, ty), max(2, tx)
+                alpha = float(p.get("alpha", 0.3))
+                beta  = float(p.get("beta", 0.05))
+                # heuristic mapping from notebook-style alpha/beta to clipLimit
+                clip = max(0.01, 2.0 + 6.0 * alpha - 2.0 * beta)
+                clahe = cv2.createCLAHE(clipLimit=clip, tileGridSize=(tx, ty))
+                if img.dtype != np.uint8:
+                    img8 = _to_uint8(img, p.get("stretch_low", 1.0), p.get("stretch_high", 99.0))
+                else:
+                    img8 = img
+                return clahe.apply(img8)
+            elif method == "percentile_stretch":
+                low = float(p.get("stretch_low", 1.0))
+                high = float(p.get("stretch_high", 99.0))
+                return _to_uint8(img, low, high)
+            return img
+
+        def _sharpen(img, p):
+            if not p.get("enabled", False):
+                return img
+            sigma = float(p.get("sigma", 0.5))
+            amount = float(p.get("amount", 1.0))
+            threshold = float(p.get("threshold", 0.0))
+            img_f = img.astype(np.float32, copy=False)
+            ksize = int(max(3, int(round(sigma * 6)) // 2 * 2 + 1))
+            blur = cv2.GaussianBlur(img_f, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
+            high = img_f - blur
+            if threshold > 0.0:
+                high[np.abs(high) < threshold] = 0.0
+            sharp = img_f + amount * high
+            if img.dtype == np.uint8:
+                sharp = np.clip(sharp, 0, 255).astype(np.uint8)
+            return sharp
+
+        def _normalize(img, p):
+            if not p.get("enabled", True):
+                return img
+            method = str(p.get("method", "rescale_uint8")).lower()
+            if method == "rescale_uint8":
+                return _to_uint8(img, p.get("perc_low", 0.5), p.get("perc_high", 99.5))
+            return img
+
+        def _largest_component(mask):
+            mask = (mask > 0).astype(np.uint8)
+            lab = measure.label(mask, connectivity=2)
+            if lab.max() == 0:
+                return mask
+            counts = np.bincount(lab.ravel())
+            counts[0] = 0
+            keep = counts.argmax()
+            return (lab == keep).astype(np.uint8)
+
+        def _zero_background(img, p):
+            if not p or not p.get("enabled", False):
+                return img, None
+            img8 = _to_uint8(img, p.get("perc_low", 0.5), p.get("perc_high", 99.5))
+            invert = bool(p.get("invert_for_otsu", True))
+            work = 255 - img8 if invert else img8
+            thr = filters.threshold_otsu(work)
+            mask = (work > thr).astype(np.uint8)
+            rad = int(p.get("morph_radius", 5))
+            if rad > 0:
+                selem = morphology.disk(rad)
+                mask = morphology.binary_closing(mask, selem)
+                mask = morphology.binary_opening(mask, selem)
+                mask = morphology.remove_small_holes(mask, area_threshold=int(p.get("min_hole_area", 64)))
+                mask = morphology.remove_small_objects(mask, min_size=int(p.get("min_object_area", 256)))
+            mask = _largest_component(mask).astype(np.uint8)
+            er = int(p.get("erode", 0))
+            if er > 0:
+                mask = cv2.erode(mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2*er+1, 2*er+1)), iterations=1)
+            out = img.copy()
+            out[mask == 0] = 0
+            return out, mask
+
+        # ---------- iterate dataset ----------
+        for patient_id, paths in tqdm(self, desc="Patients processed (MAMO)"):
+            for image_path in paths:
+                image_name = os.path.basename(image_path)
+                image = sitk.ReadImage(image_path)
+                arr = sitk.GetArrayFromImage(image)
+
+                # Handle 2D and 3D as slices
+                slices = arr if arr.ndim == 3 else np.expand_dims(arr, 0)
+                processed_slices = []
+                mask_out = None
+
+                for sl in slices:
+                    step = sl.astype(np.float32)
+
+                    step = _denoise(step, mg_params.get("denoise", {}))
+                    step = _contrast(step, mg_params.get("contrast", {}))
+                    step = _sharpen(step, mg_params.get("sharpen", {}))
+                    step = _normalize(step, mg_params.get("normalize", {"enabled": True, "method": "rescale_uint8"}))
+
+                    step, mask_step = _zero_background(step, mg_params.get("zero_bg", {}))
+                    if mask_step is not None:
+                        mask_out = mask_step
+
+                    processed_slices.append(step)
+
+                proc = np.stack(processed_slices, axis=0)
+
+                # If originally 2D, keep a depth of 1 for SimpleITK consistency
+                save_arr = proc if arr.ndim == 3 else np.expand_dims(proc[0], axis=0)
+
+                out_img = sitk.GetImageFromArray(save_arr.astype(np.float32))
+                out_img.SetSpacing(image.GetSpacing())
+                out_img.SetOrigin(image.GetOrigin())
+                out_img.SetDirection(image.GetDirection())
+                try:
+                    out_img.CopyInformation(image)
+                except Exception:
+                    pass
+
+                export_dir = os.path.join(save_path, patient_id)
+                os.makedirs(export_dir, exist_ok=True)
+                out_path = os.path.join(export_dir, f"pp_{image_name}")
+                sitk.WriteImage(out_img, out_path, useCompression=True)
+
+                if mg_params.get("zero_bg", {}).get("enabled", False) and mask_out is not None:
+                    mask_save = (np.expand_dims(mask_out, 0) if mask_out.ndim == 2 else mask_out).astype(np.uint8)
+                    mask_img = sitk.GetImageFromArray(mask_save)
+                    mask_img.CopyInformation(out_img)
+                    sitk.WriteImage(mask_img, os.path.join(export_dir, "breast_mask.nrrd"), useCompression=True)
+
+        # ---------- write parameters ----------
+        import csv, json
+        os.makedirs(save_path, exist_ok=True)
+        with open(os.path.join(save_path, "pre-processing_parameters_MAMO.csv"), "w", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["pre_process_MAMO parameters"])
+            writer.writerow(["mg_params", json.dumps(mg_params)])
+            writer.writerow(["verbosity", verbosity])
+            writer.writerow(["visualize", visualize])
+   
+    def pre_process_ECHO(self, save_path: str, us_params: dict, verbosity: bool = False, visualize: bool = False):
+        """
+        Pre-process echocardiography (ultrasound) images/cines using a parameter dictionary.
+
+        Pipeline:
+        1) Denoise: "log_aniso" (log-domain anisotropic diffusion) or "median"/"gaussian"
+        2) Contrast: "clahe" | "gamma" | "percentile_stretch"  -> outputs float in [0,1]
+        3) Sharpen: frame-wise unsharp (sigma, amount, threshold), then rewindow_like to pre-sharpen contrast
+        4) Postprocess: optional grayscale morphological opening
+        5) Normalize: "rescale_uint8" (percentiles) or "minmax_uint8"
+
+        Args:
+            save_path (str): Output folder (per-patient subfolders will be created).
+            us_params (dict): Parameter dictionary. Example:
+                {
+                    "denoise": {"enabled": True, "method": "log_aniso", "iterations": 5,
+                                "conductance": 3.0, "time_step": 0.0625,
+                                "median_radius": (1,1), "sigma": 1.0},
+                    "contrast": {"enabled": True, "method": "percentile_stretch",
+                                "stretch_low": 5.0, "stretch_high": 95.0,
+                                "clahe_clip": 2.0, "clahe_tile": (16,16), "gamma": 0.7},
+                    "sharpen": {"enabled": True, "sigma": 1.0, "amount": 1.3, "threshold": 0.02,
+                                "rewindow_low": 1.0, "rewindow_high": 99.0},
+                    "postprocess": {"opening_enabled": False, "opening_radius": 1},
+                    "normalize": {"enabled": True, "method": "rescale_uint8", "perc_low": 5.0, "perc_high": 99.5},
+                }
+            verbosity (bool): Print step timings/logs.
+            visualize (bool): Reserved for future preview hooks.
+        """
+        import os, time, json, csv
+        from tqdm import tqdm
+        import numpy as np
+        import SimpleITK as sitk
+        import cv2
+
+        if us_params is None:
+            raise ValueError("us_params must be provided (e.g., us_params_percentile).")
+
+        # ----------------- helpers -----------------
+    
+
+        def _apply_per_frame_numpy(arr, fn):
+            """Apply fn(frame) to each 2D frame if arr is (T,Y,X); else apply directly."""
+            if arr.ndim == 3:
+                return np.stack([fn(fr) for fr in arr], axis=0)
+            return fn(arr)
+
+        # ---- DENOISE ----
+        def _denoise(arr, p):
+            if not p.get("enabled", False):
+                return arr
+            method = str(p.get("method", "log_aniso")).lower()
+
+            if method == "log_aniso":
+                iterations = int(p.get("iterations", 5))
+                conductance = float(p.get("conductance", 3.0))
+                time_step = float(p.get("time_step", 0.0625))
+                img_sitk = sitk.GetImageFromArray(arr)
+
+                def _fn(frame):
+                    
+                    f32_shift = sitk.ShiftScale(frame, shift=1.0, scale=1.0)
+                    f32_log = sitk.Log(f32_shift)
+                    gad = sitk.GradientAnisotropicDiffusionImageFilter()
+                    gad.SetTimeStep(time_step)
+                    gad.SetConductanceParameter(conductance)
+                    gad.SetNumberOfIterations(iterations)
+                    sm = gad.Execute(f32_log)
+                    sm = sitk.Exp(sm)
+                    sm = sitk.ShiftScale(sm, shift=-1.0, scale=1.0)
+                    return sm
+
+                # frame-wise via SimpleITK
+                if arr.ndim == 3:
+                    sizeT = arr.shape[0]
+                    frames = []
+                    for k in range(sizeT):
+                        frame = sitk.GetImageFromArray(arr[k])
+                        frames.append(sitk.GetArrayFromImage(_fn(frame)))
+                    return np.stack(frames, axis=0)
+                else:
+                    return sitk.GetArrayFromImage(_fn(sitk.GetImageFromArray(arr)))
+
+            elif method == "median":
+                k = p.get("median_radius", (1, 1))
+                ky = max(int(k[0]) * 2 + 1, 1)
+                kx = max(int(k[1]) * 2 + 1, 1)
+                ksize = max(ky, kx)
+                return _apply_per_frame_numpy(arr, lambda fr: cv2.medianBlur(fr, ksize))
+
+            elif method == "gaussian":
+                sigma = float(p.get("sigma", 1.0))
+                ksize = int(max(3, int(round(sigma * 6)) // 2 * 2 + 1))
+                return _apply_per_frame_numpy(arr, lambda fr: cv2.GaussianBlur(fr,
+                                                                            (ksize, ksize), sigmaX=sigma, sigmaY=sigma))
+            return arr
+
+        # ---- CONTRAST (returns float in [0,1]) ----
+        def _percentile_stretch_01(a, low=5.0, high=95.0):
+            lo = np.percentile(a, low)
+            hi = np.percentile(a, high)
+            if hi <= lo: hi = lo + 1e-6
+            a = np.clip(a, lo, hi)
+            return (a - lo) / (hi - lo)
+
+        def _contrast(arr, p):
+            if not p.get("enabled", False):
+                return arr  # ← no-op when disabled
+            method = str(p.get("method", "identity")).lower()
+
+            if method in ("identity", "none"):
+                return arr  # ← explicit identity
+
+            elif method == "percentile_stretch":
+                return _percentile_stretch_01(arr,
+                                            float(p.get("stretch_low", 5.0)),
+                                            float(p.get("stretch_high", 95.0)))
+
+            elif method == "gamma":
+                base = _percentile_stretch_01(arr, 1.0, 99.0)
+                return np.power(base, float(p.get("gamma", 0.7)))
+
+            elif method == "clahe":
+                clip = float(p.get("clahe_clip", 2.0))
+                tile = tuple(p.get("clahe_tile", (16, 16)))
+                def _clahe_frame(fr):
+                    fr01 = _percentile_stretch_01(fr, 1.0, 99.0)
+                    u8 = np.clip(fr01 * 255.0, 0, 255).astype(np.uint8)
+                    out = cv2.createCLAHE(clipLimit=clip, tileGridSize=tile).apply(u8)
+                    return (out/ 255.0)
+                return _apply_per_frame_numpy(arr, _clahe_frame)
+
+            else:
+                return arr  # unknown -> identity
+
+        # ---- SHARPEN (unsharp) + rewindow ----
+        def _unsharp(arr, p, ref_for_window):
+            if not p.get("enabled", False):
+                return arr
+            sigma = float(p.get("sigma", 1.0))
+            amount = float(p.get("amount", 1.3))
+            threshold = float(p.get("threshold", 0.02))
+            rw_low = float(p.get("rewindow_low", 1.0))
+            rw_high = float(p.get("rewindow_high", 99.0))
+
+            def _proc(fr):
+                fr = fr
+                ksize = int(max(3, int(round(sigma * 6)) // 2 * 2 + 1))
+                blur = cv2.GaussianBlur(fr, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
+                detail = fr - blur
+                if threshold > 0.0:
+                    detail[np.abs(detail) < threshold] = 0.0
+                sharp = fr + amount * detail
+                # rewindow against the reference (pre-sharpen contrast)
+                lo = np.percentile(ref_for_window, rw_low)
+                hi = np.percentile(ref_for_window, rw_high)
+                if hi <= lo: hi = lo + 1e-6
+                sharp = np.clip(sharp, lo, hi)
+                return (sharp - lo) / (hi - lo)
+
+            if arr.ndim == 3:
+                out = []
+                for t in range(arr.shape[0]):
+                    out.append(_proc(arr[t]))
+                return np.stack(out, axis=0)
+            else:
+                return _proc(arr)
+
+        # ---- POSTPROCESS ----
+        def _postprocess(arr, p):
+            if not p.get("opening_enabled", False):
+                return arr
+            radius = int(p.get("opening_radius", 1))
+            kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * radius + 1, 2 * radius + 1))
+            return _apply_per_frame_numpy(arr, lambda fr: cv2.morphologyEx(fr, cv2.MORPH_OPEN, kernel))
+
+        # ---- NORMALIZE (final, to uint8) ----
+        def _normalize(arr, p, orig_dtype):
+            if not p.get("enabled", False):
+                # keep values/dtype (no casting to 255, no uint8)
+                return arr  
+
+            method = str(p.get("method", "identity")).lower()
+
+            if method in ("identity", "none"):
+                return arr
+
+            elif method == "rescale_uint8":
+                out01 = _percentile_stretch_01(arr, float(p.get("perc_low", 5.0)),
+                                                    float(p.get("perc_high", 99.5)))
+                return np.clip(out01 * 255.0, 0, 255).astype(np.uint8)
+
+            elif method == "minmax_uint8":
+                a_min, a_max = float(arr.min()), float(arr.max())
+                if a_max <= a_min: a_max = a_min + 1e-6
+                out01 = (arr - a_min) / (a_max - a_min)
+                return np.clip(out01 * 255.0, 0, 255).astype(np.uint8)
+
+            elif method == "rescale_float01":
+                # optional: keep float in [0,1], no uint8 cast
+                out01 = _percentile_stretch_01(arr, float(p.get("perc_low", 1.0)),
+                                                    float(p.get("perc_high", 99.5)))
+                return out01
+
+            # default: identity
+            return arr
+
+
+        # ----------------- iterate dataset -----------------
+        for patient_id, paths in tqdm(self, desc="Patients processed (ECHO)"):
+            for image_path in paths:
+                t0 = time.time()
+                image_name = os.path.basename(image_path)
+                image = sitk.ReadImage(image_path)
+                orig_dtype = sitk.GetArrayFromImage(image).dtype
+                print(f"[{patient_id}] Processing {image_name}  (orig dtype: {orig_dtype})")
+
+                arr = sitk.GetArrayFromImage(image) # (T,Y,X) or (Y,X)
+
+                # 1) Denoise
+                t = time.time()
+                arr = _denoise(arr, us_params.get("denoise", {}))
+                if verbosity: print(f"[{patient_id}] Denoise: {(time.time()-t)*1000:.0f} ms")
+
+                # 2) Contrast -> float [0,1]
+                t = time.time()
+                con = _contrast(arr, us_params.get("contrast", {}))
+                # con = np.clip(con, 0.0, 1.0).astype(np.float32)
+                if verbosity: print(f"[{patient_id}] Contrast: {(time.time()-t)*1000:.0f} ms")
+
+                # 3) Sharpen (frame-wise) + rewindow to pre-sharpen contrast
+                t = time.time()
+                shp = _unsharp(con, us_params.get("sharpen", {}), ref_for_window=con)
+                if verbosity: print(f"[{patient_id}] Sharpen: {(time.time()-t)*1000:.0f} ms")
+
+                # 4) Optional postprocess
+                t = time.time()
+                post = _postprocess(shp, us_params.get("postprocess", {}))
+                if verbosity: print(f"[{patient_id}] Post-process: {(time.time()-t)*1000:.0f} ms")
+
+                # 5) Final normalization to uint8
+                t = time.time()
+                
+                out_arr = _normalize(post, us_params.get("normalize", {"enabled": False}), orig_dtype)
+                if verbosity: print(f"[{patient_id}] Normalize: {(time.time()-t)*1000:.0f} ms")
+
+                # Save with SimpleITK metadata
+                out_img = sitk.GetImageFromArray(out_arr.astype(orig_dtype))
+                out_img.SetSpacing(image.GetSpacing())
+                out_img.SetOrigin(image.GetOrigin())
+                out_img.SetDirection(image.GetDirection())
+                try:
+                    out_img.CopyInformation(image)
+                except Exception:
+                    pass
+
+                export_dir = os.path.join(save_path, patient_id)
+                os.makedirs(export_dir, exist_ok=True)
+                out_path = os.path.join(export_dir, f"pp_{image_name}")
+                # No forced uint8:
+                sitk.WriteImage(out_img, out_path, useCompression=True)
+
+
+
+                if verbosity:
+                    print(f"[{patient_id}] Total: {(time.time()-t0)*1000:.0f} ms  -> {out_path}")
+
+        # ---------- write parameters ----------
+        os.makedirs(save_path, exist_ok=True)
+        with open(os.path.join(save_path, "pre-processing_parameters_ECHO.csv"), "w", newline="") as csv_file:
+            writer = csv.writer(csv_file)
+            writer.writerow(["pre_process_ECHO parameters"])
+            writer.writerow(["us_params", json.dumps(us_params)])
+            writer.writerow(["verbosity", verbosity])
+            writer.writerow(["visualize", visualize])
 
     def get_quality_checks(self, qc_parameters: dict = {'specific_modality': '',
                                                         'thickness_range': [],

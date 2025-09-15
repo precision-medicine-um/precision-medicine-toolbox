@@ -33,6 +33,8 @@
 - **Endpoint**: `POST /preprocess/`
 - **Status Code**: `202 Accepted` (previously `200`)
 - **New Required Field**: `callback_url` - URL where completion status will be POSTed
+- **New Optional Field**: `modality` - Processing modality ("mamo" or "echo", default: "mamo")
+- **Enhanced Processing**: Now supports modality-specific preprocessing with optimized parameters for mammography and ultrasound imaging
 - **Response Format**: 
   ```json
   {"detail": "Pre-processing started – result will be POSTed to callback_url"}
@@ -100,6 +102,14 @@ response = requests.post("/convert_to_nrrd/", json={
     "callback_url": "https://your-server.com/webhook/nrrd-complete"
 })
 # Non-blocking - receive notification at callback_url when done
+
+# For preprocessing with modality selection:
+response = requests.post("/preprocess/", json={
+    "data_path": "/nrrd/path",
+    "save_path": "/output/path",
+    "modality": "mamo",  # or "echo"
+    "callback_url": "https://your-server.com/webhook/preprocess-complete"
+})
 ```
 
 #### **Setting Up Webhook Endpoint**
@@ -135,6 +145,7 @@ async def handle_nrrd_completion(notification: dict):
 1. **Request Format**: All endpoints now require JSON body instead of query parameters
 2. **Required callback_url**: All endpoints now require a webhook URL for notifications
 3. **Response Format**: Immediate response with 202 status instead of waiting for completion
+4. **Modality Selection**: Preprocess endpoint now supports modality-specific processing ("mamo" or "echo")
 
 ### 📝 Files Modified
 
